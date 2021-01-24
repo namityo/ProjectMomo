@@ -36,7 +36,7 @@ namespace ProjectMomo
         /// <param name="input"></param>
         /// <param name="context"></param>
         /// <returns></returns>
-        public APIGatewayProxyResponse S3FunctionHandler(APIGatewayProxyRequest request, ILambdaContext context)
+        public async Task<APIGatewayProxyResponse> S3FunctionHandlerAsync(APIGatewayProxyRequest request, ILambdaContext context)
         {
             const string ENV_S3_BUCKET_NAME = "S3_BUCKET_NAME";
 
@@ -63,15 +63,8 @@ namespace ProjectMomo
             // Cognito認証情報を取得する
             // https://stackoverflow.com/questions/29928401/how-to-get-the-cognito-identity-id-in-aws-lambda
             var claims = request.RequestContext?.Authorizer?.Claims;
-            // TODO:Debug
-            if (claims != null)
-            {
-                foreach (var kv in claims)
-                {
-                    context.Logger.LogLine($"claims[{kv.Key}] = {claims[kv.Value]}");
-                }
-            }
-            var userId = string.Empty;
+            // Cognito認証情報が取得できたらusernameを取得する
+            var userId = claims?["cognito:username"] ?? string.Empty;
 
             try
             {
@@ -81,9 +74,14 @@ namespace ProjectMomo
                 context.Logger.LogLine($"write s3 key : {s3key}");
 
                 // S3にオブジェクトをPutする
-                var result = PutObjectS3Async(regionEndpoint, s3bucketName, s3key, CreateStream("hoge"));
+                var result = await PutObjectS3Async(regionEndpoint, s3bucketName, s3key, CreateStream("hoge"));
+                context.Logger.LogLine($"put s3 reulst:{result.HttpStatusCode.ToString()}");
+                
                 return new APIGatewayProxyResponse() {
                     StatusCode = (int)HttpStatusCode.OK,
+                    Headers = new Dictionary<string, string>() {
+                        {"Access-Control-Allow-Origin", "*"},
+                    },
                 };
             }
             catch (Exception e)
