@@ -9,6 +9,7 @@ using Amazon.Lambda.Core;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Amazon.Lambda.APIGatewayEvents;
+using Amazon.Lambda.S3Events;
 using System.Net;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
@@ -137,6 +138,20 @@ namespace ProjectMomo
                     InputStream = stream,
                 };
                 return s3c.PutObjectAsync(request);
+            }
+        }
+
+        /// <summary>
+        /// S3オブジェクトのイベントで動作するHandler
+        /// </summary>
+        /// <param name="s3Event"></param>
+        /// <param name="context"></param>
+        public void S3PutHandler(S3Event s3Event, ILambdaContext context)
+        {
+            foreach (var record in s3Event.Records)
+            {
+                var s3 = record.S3;
+                context.Logger.LogLine($"[{record.EventSource} - {record.EventTime}] Bucket = {s3.Bucket.Name}, Key = {s3.Object.Key}");
             }
         }
     }
