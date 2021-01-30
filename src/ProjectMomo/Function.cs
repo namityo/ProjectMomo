@@ -11,6 +11,10 @@ using Amazon.S3.Model;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.S3Events;
 using System.Net;
+using System.Text.Json;
+using ProjectMomo.Models;
+using ProjectMomo.Extensions;
+using OfficeOpenXml;
 
 // Assembly attribute to enable the Lambda function's JSON input to be converted into a .NET class.
 [assembly: LambdaSerializer(typeof(Amazon.Lambda.Serialization.SystemTextJson.DefaultLambdaJsonSerializer))]
@@ -75,7 +79,7 @@ namespace ProjectMomo
                 context.Logger.LogLine($"write s3 key : {s3key}");
 
                 // S3にオブジェクトをPutする
-                var result = await PutObjectS3Async(regionEndpoint, s3bucketName, s3key, CreateStream("hoge"));
+                var result = await PutObjectS3Async(regionEndpoint, s3bucketName, s3key, CreateStream(userId));
                 context.Logger.LogLine($"put s3 reulst:{result.HttpStatusCode.ToString()}");
                 
                 return new APIGatewayProxyResponse() {
@@ -97,7 +101,17 @@ namespace ProjectMomo
 
         private Stream CreateStream(string userId)
         {
-            var json = "{\"user_id\":\"" + userId + "\"}";
+            //var json = "{\"user_id\":\"" + userId + "\"}";
+            //return new MemoryStream(Encoding.UTF8.GetBytes(json));
+
+            var obj = new InvoiceRequest() {
+                Hoge = userId,
+                Hage = "hage",
+                Details = new [] {
+                    new InvoiceDetails() { Name = "原稿料", BasePrice = 10000M, TaxPrice = 1000M},
+                },
+            };
+            var json = JsonSerializer.Serialize<InvoiceRequest>(obj);
             return new MemoryStream(Encoding.UTF8.GetBytes(json));
         }
 
@@ -141,17 +155,86 @@ namespace ProjectMomo
             }
         }
 
+        private Task<GetObjectResponse> GetObjectS3Async(
+            RegionEndpoint regionEndpoint,
+            string bucketName,
+            string key)
+        {
+            using (var s3c = new AmazonS3Client(regionEndpoint))
+            {
+                return s3c.GetObjectAsync(new GetObjectRequest()
+                {
+                    BucketName = bucketName,
+                    Key = key,
+                });
+            }
+        }
+
+
         /// <summary>
         /// S3オブジェクトのイベントで動作するHandler
         /// </summary>
         /// <param name="s3Event"></param>
         /// <param name="context"></param>
-        public void S3PutHandler(S3Event s3Event, ILambdaContext context)
+        public async Task S3PutHandlerAsync(S3Event s3Event, ILambdaContext context)
         {
+            const string ENV_S3_BUCKET_NAME = "S3_BUCKET_NAME";
+
+            // リージョンの取得
+            var regionEndpoint = GetEnvironmentRegionEndpoint();
+            if (regionEndpoint == null) 
+            {
+                throw new Exception("error. don't set environment region.");
+            }
+
+            // S3バケット名を環境変数から取得
+            var s3bucketName = Environment.GetEnvironmentVariable(ENV_S3_BUCKET_NAME);
+            if (string.IsNullOrEmpty(s3bucketName))
+            {
+                throw new Exception($"error. The environment variable {ENV_S3_BUCKET_NAME} is not set.");
+            }
+
             foreach (var record in s3Event.Records)
             {
                 var s3 = record.S3;
                 context.Logger.LogLine($"[{record.EventSource} - {record.EventTime}] Bucket = {s3.Bucket.Name}, Key = {s3.Object.Key}");
+
+                using (var response = await GetObjectS3Async(regionEndpoint, s3.Bucket.Name, s3.Object.Key))
+                using (var stream = response.ResponseStream)
+                {
+                    var jsonObj = await JsonSerializer.DeserializeAsync<InvoiceRequest>(stream);
+
+                    // Debug Log
+                    context.Logger.LogLine($"Hoge : {jsonObj.Hoge}, Hage : {jsonObj.Hage}");
+                    foreach (var detail in jsonObj.Details.OrEmptyIfNull())
+                    {
+                        context.Logger.LogLine($"Detail : {detail.Name} - {detail.BasePrice} + {detail.TaxPrice}");
+                    }
+
+                    // S3にオブジェクトをPutする
+                    var s3dir = s3.Object.Key.Split('/')[0];
+                    var s3key = s3dir + $"/{Guid.NewGuid().ToString()}.xlsx";
+                    context.Logger.LogLine($"write s3 key : {s3key}");
+
+                    var result = await PutObjectS3Async(regionEndpoint, s3bucketName, s3key, new MemoryStream(CreateExcelInvoice(jsonObj)));
+                    context.Logger.LogLine($"put s3 result:{result.HttpStatusCode.ToString()}");
+                }
+            }   
+        }
+
+        private byte[] CreateExcelInvoice(InvoiceRequest invoiceRequest)
+        {
+            using (var package = new ExcelPackage())
+            {
+                var sheet = package.Workbook.Worksheets.Add("Invoice");
+                sheet.Cells["A1"].Value = invoiceRequest.Hoge;
+                sheet.Cells["A2"].Value = invoiceRequest.Hage;
+
+                var details = from detail in invoiceRequest.Details.OrEmptyIfNull()
+                              select new object[] {detail.Name, detail.BasePrice, detail.TaxPrice,};
+                sheet.Cells["A3"].LoadFromArrays(details);
+
+                return package.GetAsByteArray();
             }
         }
     }
