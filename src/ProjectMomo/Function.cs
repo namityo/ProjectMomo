@@ -145,8 +145,7 @@ namespace ProjectMomo
         {
             using (var s3c = new AmazonS3Client(regionEndpoint))
             {
-                var request = new PutObjectRequest()
-                {
+                var request = new PutObjectRequest() {
                     BucketName = bucketName,
                     Key = key,
                     InputStream = stream,
@@ -162,10 +161,23 @@ namespace ProjectMomo
         {
             using (var s3c = new AmazonS3Client(regionEndpoint))
             {
-                return s3c.GetObjectAsync(new GetObjectRequest()
-                {
+                return s3c.GetObjectAsync(new GetObjectRequest() {
                     BucketName = bucketName,
                     Key = key,
+                });
+            }
+        }
+
+        private async Task<ListObjectsV2Response> ListObjectS3Async(
+            RegionEndpoint regionEndpoint,
+            string bucketName,
+            string prefix = "")
+        {
+            using (var s3c = new AmazonS3Client(regionEndpoint))
+            {
+                return await s3c.ListObjectsV2Async(new ListObjectsV2Request() {
+                    BucketName = bucketName,
+                    Prefix = prefix,
                 });
             }
         }
@@ -235,6 +247,144 @@ namespace ProjectMomo
                 sheet.Cells["A3"].LoadFromArrays(details);
 
                 return package.GetAsByteArray();
+            }
+        }
+
+        public async Task<APIGatewayProxyResponse> S3GetListHandlerAsync(APIGatewayProxyRequest request, ILambdaContext context)
+        {
+            const string ENV_S3_BUCKET_NAME = "S3_BUCKET_NAME";
+
+            // リージョンの取得
+            var regionEndpoint = GetEnvironmentRegionEndpoint();
+            if (regionEndpoint == null) 
+            {
+                context.Logger.LogLine("error. don't set environment region.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+
+            // S3バケット名を環境変数から取得
+            var s3bucketName = Environment.GetEnvironmentVariable(ENV_S3_BUCKET_NAME);
+            if (string.IsNullOrEmpty(s3bucketName))
+            {
+                context.Logger.LogLine($"error. The environment variable {ENV_S3_BUCKET_NAME} is not set.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+
+            // Cognito認証情報を取得する
+            // https://stackoverflow.com/questions/29928401/how-to-get-the-cognito-identity-id-in-aws-lambda
+            var claims = request.RequestContext?.Authorizer?.Claims;
+            // Cognito認証情報が取得できたらusernameを取得する
+            var userId = claims?["cognito:username"] ?? "public";
+
+
+            var response = await ListObjectS3Async(regionEndpoint, s3bucketName, userId + "/");
+            if (response.HttpStatusCode == HttpStatusCode.OK)
+            {
+                context.Logger.LogLine($"OK. ListObject S3.");
+
+                var sb = new StringBuilder();
+                sb.Append("{\"objects\":[");
+
+                var strs = from obj in response.S3Objects
+                           let key = obj.Key.Split('/').Last()
+                           let size = obj.Size
+                           select "{" + string.Format("\"key\":\"{0}\",\"size\":{1}", key, size) + "}";
+                sb.Append(string.Join(',', strs));
+                sb.Append("]}");
+
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.OK,
+                    Headers = new Dictionary<string, string>() {
+                        {"Access-Control-Allow-Origin", "*"},
+                        {"Content-Type", "application/json"},
+                    },
+                    Body = sb.ToString(),
+                };
+            }
+            else
+            {
+                context.Logger.LogLine($"error. ListObject S3.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+        }
+
+        public async Task<APIGatewayProxyResponse> S3GetObjectHandlerAsync(APIGatewayProxyRequest request, ILambdaContext context)
+        {
+            const string ENV_S3_BUCKET_NAME = "S3_BUCKET_NAME";
+
+            // リージョンの取得
+            var regionEndpoint = GetEnvironmentRegionEndpoint();
+            if (regionEndpoint == null) 
+            {
+                context.Logger.LogLine("error. don't set environment region.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+
+            // S3バケット名を環境変数から取得
+            var s3bucketName = Environment.GetEnvironmentVariable(ENV_S3_BUCKET_NAME);
+            if (string.IsNullOrEmpty(s3bucketName))
+            {
+                context.Logger.LogLine($"error. The environment variable {ENV_S3_BUCKET_NAME} is not set.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+
+            // pathパラメーターが存在しない
+            if (!request.PathParameters.ContainsKey("name"))
+            {
+                context.Logger.LogLine($"error. unset path parameter 'name'.");
+                return new APIGatewayProxyResponse() {
+                    StatusCode = (int)HttpStatusCode.InternalServerError,
+                };
+            }
+
+            // Cognito認証情報を取得する
+            // https://stackoverflow.com/questions/29928401/how-to-get-the-cognito-identity-id-in-aws-lambda
+            var claims = request.RequestContext?.Authorizer?.Claims;
+            // Cognito認証情報が取得できたらusernameを取得する
+            var userId = claims?["cognito:username"] ?? "public";
+
+            var s3key = userId + "/" + request.PathParameters["name"];
+            context.Logger.LogLine($"get object s3 key : {s3key}");
+
+            using(var response = await GetObjectS3Async(regionEndpoint, s3bucketName, s3key))
+            {
+                if (response.HttpStatusCode == HttpStatusCode.OK)
+                {
+                    context.Logger.LogLine($"OK. GetObject S3. key : {s3key}");
+                    using (var stream = response.ResponseStream)
+                    using (var ms = new MemoryStream())
+                    {
+                        await stream.CopyToAsync(ms);
+                        ms.Position = 0;
+
+                        return new APIGatewayProxyResponse() {
+                            StatusCode = (int)HttpStatusCode.OK,
+                            Headers = new Dictionary<string, string>() {
+                                {"Access-Control-Allow-Origin", "*"},
+                                {"Content-Type", response.Headers.ContentType},
+                            },
+                            IsBase64Encoded = true,
+                            Body = Convert.ToBase64String(ms.ToArray()),
+                        };
+                    }
+                }
+                else
+                {
+                    context.Logger.LogLine($"error. GetObject S3.");
+                    return new APIGatewayProxyResponse() {
+                        StatusCode = (int)HttpStatusCode.InternalServerError,
+                    };
+                }
             }
         }
     }
