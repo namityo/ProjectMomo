@@ -5,14 +5,19 @@ using System.Threading.Tasks;
 using System.IO;
 using System.Text;
 using Amazon;
+using Amazon.Util;
 using Amazon.Lambda.Core;
 using Amazon.S3;
 using Amazon.S3.Model;
+using Amazon.DynamoDBv2;
+using Amazon.DynamoDBv2.DataModel;
 using Amazon.Lambda.APIGatewayEvents;
 using Amazon.Lambda.S3Events;
 using System.Net;
 using System.Text.Json;
 using ProjectMomo.Models;
+using ProjectMomo.Lambda;
+using ProjectMomo.Models.DynamoDB;
 using ProjectMomo.Extensions;
 using OfficeOpenXml;
 
@@ -105,10 +110,12 @@ namespace ProjectMomo
             //return new MemoryStream(Encoding.UTF8.GetBytes(json));
 
             var obj = new InvoiceRequest() {
-                Hoge = userId,
-                Hage = "hage",
                 Details = new [] {
-                    new InvoiceDetails() { Name = "原稿料", BasePrice = 10000M, TaxPrice = 1000M},
+                    new Models.InvoiceDetails() {
+                        Description = "原稿料",
+                        UnitCost = 10000M,
+                        Quantity = 1,
+                        Amount = 10000M},
                 },
             };
             var json = JsonSerializer.Serialize<InvoiceRequest>(obj);
@@ -216,12 +223,12 @@ namespace ProjectMomo
                 {
                     var jsonObj = await JsonSerializer.DeserializeAsync<InvoiceRequest>(stream);
 
-                    // Debug Log
-                    context.Logger.LogLine($"Hoge : {jsonObj.Hoge}, Hage : {jsonObj.Hage}");
-                    foreach (var detail in jsonObj.Details.OrEmptyIfNull())
-                    {
-                        context.Logger.LogLine($"Detail : {detail.Name} - {detail.BasePrice} + {detail.TaxPrice}");
-                    }
+                    //// Debug Log
+                    // context.Logger.LogLine($"Hoge : {jsonObj.Hoge}, Hage : {jsonObj.Hage}");
+                    // foreach (var detail in jsonObj.Details.OrEmptyIfNull())
+                    // {
+                    //     context.Logger.LogLine($"Detail : {detail.Name} - {detail.BasePrice} + {detail.TaxPrice}");
+                    // }
 
                     // S3にオブジェクトをPutする
                     var s3dir = s3.Object.Key.Split('/')[0];
@@ -239,11 +246,11 @@ namespace ProjectMomo
             using (var package = new ExcelPackage())
             {
                 var sheet = package.Workbook.Worksheets.Add("Invoice");
-                sheet.Cells["A1"].Value = invoiceRequest.Hoge;
-                sheet.Cells["A2"].Value = invoiceRequest.Hage;
+                sheet.Cells["A1"].Value = invoiceRequest.BillTo.Name;
+                sheet.Cells["A2"].Value = invoiceRequest.BillTo.ZipCode;
 
                 var details = from detail in invoiceRequest.Details.OrEmptyIfNull()
-                              select new object[] {detail.Name, detail.BasePrice, detail.TaxPrice,};
+                              select new object[] {detail.Description, detail.UnitCost, detail.Quantity,};
                 sheet.Cells["A3"].LoadFromArrays(details);
 
                 return package.GetAsByteArray();
@@ -387,5 +394,67 @@ namespace ProjectMomo
                 }
             }
         }
+
+        // /// <summary>
+        // /// Function Handler, Invoice Save DynamoDB
+        // /// </summary>
+        // /// <param name="request"></param>
+        // /// <param name="context"></param>
+        // /// <returns></returns>
+        // public async Task<APIGatewayProxyResponse> PostInvoiceHandlerAsync(APIGatewayProxyRequest request, ILambdaContext context)
+        // {
+        //     const string ENV_DYNAMODB_TABLE_NAME = "DYNAMODB_TABLE_NAME";
+
+        //     // DynamoDBのテーブル名を環境変数から取得
+        //     var tableName = Environment.GetEnvironmentVariable(ENV_DYNAMODB_TABLE_NAME);
+        //     if (string.IsNullOrEmpty(tableName))
+        //     {
+        //         context.Logger.LogLine($"error. The environment variable {ENV_DYNAMODB_TABLE_NAME} is not set.");
+        //         return ProxyResponseUtil.InternalServerError();
+        //     }
+
+        //     // Bodyをデシリアライズする
+        //     var invoiceRequest = JsonSerializer.Deserialize<InvoiceRequest>(request.Body);
+        //     context.Logger.LogLine($"[invoiceRequest] BillTo-Name : {invoiceRequest.BillTo.Name}");
+
+        //     // Cognito認証情報を取得する
+        //     // https://stackoverflow.com/questions/29928401/how-to-get-the-cognito-identity-id-in-aws-lambda
+        //     var claims = request.RequestContext?.Authorizer?.Claims;
+        //     // Cognito認証情報が取得できたらusernameを取得する
+        //     var userId = claims?["cognito:username"] ?? "public";
+
+        //     try
+        //     {
+        //         context.Logger.LogLine($"write DynamoDB Table : {tableName}");
+
+        //         var dbClient = new AmazonDynamoDBClient();
+        //         var dbContext = new DynamoDBContext(dbClient);
+        //         AWSConfigsDynamoDB.Context.AddMapping(new TypeMapping(typeof(InvoiceItem), tableName));
+
+        //         var item = new InvoiceItem() {
+        //             RequestId = Guid.NewGuid().ToString(),
+        //             UserId = userId,
+        //             Address = new Models.DynamoDB.InvoiceAddress() {
+        //                 Name = "Hoge",
+        //             },
+        //             Details = new List<Models.DynamoDB.InvoiceDetails>() {
+        //                 new Models.DynamoDB.InvoiceDetails() {
+        //                     Name = "お菓子代",
+        //                     BasePrice = 100,
+        //                     TaxPrice = 10,
+        //                 },
+        //             },
+        //         };
+
+        //         await dbContext.SaveAsync(item);
+                
+        //         return ProxyResponseUtil.Create((int)HttpStatusCode.OK);
+        //     }
+        //     catch (Exception e)
+        //     {
+        //         context.Logger.LogLine($"error. catch Exception by DynamoDB SaveAsync. {e.Message}");
+        //         return ProxyResponseUtil.InternalServerError();
+        //     }
+        // }
     }
 }

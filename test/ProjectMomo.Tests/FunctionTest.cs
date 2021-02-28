@@ -36,22 +36,5 @@ namespace ProjectMomo.Tests
 
             //Assert.Equal(200, result.StatusCode);
         }
-
-        [Fact]
-        public void TestCreateExcelInvoice()
-        {
-            var function = new Function();
-            var data = function.CreateExcelInvoice(new Models.InvoiceRequest() {
-                Hoge = "hoge",
-                Hage = "hage",
-                Details = new Models.InvoiceDetails[] {
-                    new Models.InvoiceDetails() { Name = "aaa", BasePrice = 1000M, TaxPrice = 100M},
-                    new Models.InvoiceDetails() { Name = "bbb", BasePrice = 2000M, TaxPrice = 200M},
-                    new Models.InvoiceDetails() { Name = "ccc", BasePrice = 3000M, TaxPrice = 300M},
-                }
-            });
-
-            System.IO.File.WriteAllBytes("test.xlsx", data);
-        }
     }
 }
